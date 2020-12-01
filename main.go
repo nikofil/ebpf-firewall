@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/cilium/ebpf"
@@ -42,18 +43,29 @@ func main() {
 		return
 	}
 
-	if _, ok := collec.Programs[egressProgName]; !ok {
-		fmt.Println("Program not found:", egressProgName)
-		return
-	}
-	firstRun := true
-	cleanup := true
-	var prog *ebpf.Program
+	firstRun := false
+
+	var ingressProg, egressProg *ebpf.Program
+	ingressPinPath := filepath.Join(ebpfFS, ingressProgName)
+	egressPinPath := filepath.Join(ebpfFS, egressProgName)
 	if firstRun {
-		prog = collec.Programs[egressProgName]
-		prog.Pin("/sys/fs/bpf/myprog")
+		ingressProg = collec.Programs[ingressProgName]
+		ingressProg.Pin(ingressPinPath)
+
+		egressProg = collec.Programs[egressProgName]
+		egressProg.Pin(egressPinPath)
 	} else {
-		prog, _ = ebpf.LoadPinnedProgram("/sys/fs/bpf/myprog")
+		ingressProg, err = ebpf.LoadPinnedProgram(ingressPinPath)
+		if err != nil {
+			fmt.Println(err)
+			return
+		}
+
+		egressProg, err = ebpf.LoadPinnedProgram(egressPinPath)
+		if err != nil {
+			fmt.Println(err)
+			return
+		}
 	}
 
 	cgroup, err := os.Open(rootCgroup)
@@ -65,28 +77,41 @@ func main() {
 	if firstRun {
 		_, err := link.AttachCgroup(link.CgroupOptions{
 			Path:    cgroup.Name(),
-			Attach:  ebpf.AttachCGroupInetEgress,
-			Program: collec.Programs["egress"],
+			Attach:  ebpf.AttachCGroupInetIngress,
+			Program: collec.Programs[ingressProgName],
 		})
 		if err != nil {
+			fmt.Println(err)
+			return
+		}
+
+		_, err = link.AttachCgroup(link.CgroupOptions{
+			Path:    cgroup.Name(),
+			Attach:  ebpf.AttachCGroupInetEgress,
+			Program: collec.Programs[egressProgName],
+		})
+		if err != nil {
+			fmt.Println(err)
 			return
 		}
 	}
 
-	var x *ebpf.Map
-	var e error
-	var ok bool
+	var outputMap *ebpf.Map
+	mapPinPath := filepath.Join(ebpfFS, flowMapName)
 	if firstRun {
-		x, ok = collec.Maps["my_map"]
-		x.Pin("/sys/fs/bpf/my_map1")
-		fmt.Println(ok)
+		outputMap, _ = collec.Maps[flowMapName]
+		outputMap.Pin(mapPinPath)
 	} else {
-		x, e = ebpf.LoadPinnedMap("/sys/fs/bpf/my_map1")
-		fmt.Println(e)
+		outputMap, err = ebpf.LoadPinnedMap(mapPinPath)
+		if err != nil {
+			fmt.Println(err)
+			return
+		}
 	}
+
 	time.Sleep(3 * time.Second)
 	var val record
-	for x.LookupAndDelete(nil, &val) == nil {
+	for outputMap.LookupAndDelete(nil, &val) == nil {
 		if val.Dstip == 0 {
 			continue
 		}
@@ -107,15 +132,15 @@ func main() {
 		fmt.Println(pktFlow)
 	}
 
-	if cleanup {
-		if prog != nil {
-			cgroup, err := os.Open(rootCgroup)
-			if err != nil {
-				return
-			}
-			defer cgroup.Close()
-
-			prog.Detach(int(cgroup.Fd()), ebpf.AttachCGroupInetEgress, 0)
+	if !firstRun {
+		cgroup, err := os.Open(rootCgroup)
+		if err != nil {
+			fmt.Println(err)
+			return
 		}
+		defer cgroup.Close()
+
+		ingressProg.Detach(int(cgroup.Fd()), ebpf.AttachCGroupInetIngress, 0)
+		egressProg.Detach(int(cgroup.Fd()), ebpf.AttachCGroupInetEgress, 0)
 	}
 }

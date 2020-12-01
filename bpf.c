@@ -34,6 +34,11 @@ inline void handle_pkt(struct __sk_buff *skb, bool egress) {
     }
 }
 
+__section("cgroup_skb/ingress")
+int ingress(struct __sk_buff *skb) {
+    handle_pkt(skb, false);
+    return 0;
+}
 
 __section("cgroup_skb/egress")
 int egress(struct __sk_buff *skb) {
