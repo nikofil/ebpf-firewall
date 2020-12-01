@@ -11,16 +11,24 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-type bpf struct {
-	prog *ebpf.Program
+type record struct {
+	Flags uint32
+	Dstip uint32
+	Srcip uint32
 }
 
 const (
-	rootCgroup     = "/sys/fs/cgroup/unified"
-	mapName        = "lpm_filter"
-	bpfCodePath    = "bpf.o"
-	bpfProgramName = "egress"
+	rootCgroup      = "/sys/fs/cgroup/unified"
+	ebpfFS          = "/sys/fs/bpf"
+	flowMapName     = "my_map"
+	bpfCodePath     = "bpf.o"
+	egressProgName  = "egress"
+	ingressProgName = "ingress"
 )
+
+func intToIP(val uint32) net.IP {
+	return net.IPv4(byte(val&0xff), byte((val>>8)&0xff), byte((val>>16)&0xff), byte(val>>24))
+}
 
 func main() {
 	unix.Setrlimit(unix.RLIMIT_MEMLOCK, &unix.Rlimit{
@@ -34,15 +42,15 @@ func main() {
 		return
 	}
 
-	if _, ok := collec.Programs[bpfProgramName]; !ok {
-		fmt.Println("Program not found:", bpfProgramName)
+	if _, ok := collec.Programs[egressProgName]; !ok {
+		fmt.Println("Program not found:", egressProgName)
 		return
 	}
 	firstRun := true
 	cleanup := true
 	var prog *ebpf.Program
 	if firstRun {
-		prog = collec.Programs[bpfProgramName]
+		prog = collec.Programs[egressProgName]
 		prog.Pin("/sys/fs/bpf/myprog")
 	} else {
 		prog, _ = ebpf.LoadPinnedProgram("/sys/fs/bpf/myprog")
@@ -77,13 +85,26 @@ func main() {
 		fmt.Println(e)
 	}
 	time.Sleep(3 * time.Second)
-	var val uint32
+	var val record
 	for x.LookupAndDelete(nil, &val) == nil {
-		if val == 0 {
+		if val.Dstip == 0 {
 			continue
 		}
-		ip := net.IPv4(byte(val&0xff), byte((val>>8)&0xff), byte((val>>16)&0xff), byte(val>>24))
-		fmt.Println(ip)
+		dstip := intToIP(val.Dstip)
+		srcip := intToIP(val.Srcip)
+		egress := (val.Flags & 1) != 0
+		blocked := (val.Flags & 2) != 0
+
+		var pktFlow string
+		if egress {
+			pktFlow = fmt.Sprintf("%v -> %v", srcip, dstip)
+		} else {
+			pktFlow = fmt.Sprintf("%v <- %v", dstip, srcip)
+		}
+		if blocked {
+			pktFlow += " [BLOCKED]"
+		}
+		fmt.Println(pktFlow)
 	}
 
 	if cleanup {
