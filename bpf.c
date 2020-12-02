@@ -12,11 +12,18 @@ typedef struct {
     __u32 srcip;
 } conn;
 
-struct bpf_map_def __section("maps") my_map = {
+struct bpf_map_def __section("maps") flows = {
 	.type = BPF_MAP_TYPE_QUEUE,
 	.key_size = 0,
 	.value_size = sizeof(conn),
 	.max_entries = 10000,
+};
+
+struct bpf_map_def __section("maps") blocked_ips = {
+	.type = BPF_MAP_TYPE_HASH,
+	.key_size = 0,
+	.value_size = sizeof(__u32),
+	.max_entries = 100,
 };
 
 inline void handle_pkt(struct __sk_buff *skb, bool egress) {
@@ -30,7 +37,7 @@ inline void handle_pkt(struct __sk_buff *skb, bool egress) {
             .dstip = iph.daddr,
         };
 
-        bpf_map_push_elem(&my_map, &x, 0);
+        bpf_map_push_elem(&flows, &x, 0);
     }
 }
 
