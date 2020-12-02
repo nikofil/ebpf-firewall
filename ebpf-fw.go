@@ -44,7 +44,7 @@ func ipToInt(val string) uint32 {
 
 func main() {
 	if len(os.Args) == 1 {
-		fmt.Println("Give an option: load, unload, show, block [address] or unblock [address]")
+		fmt.Println("Give me an action: load, unload, show, block [address] or unblock [address]")
 		return
 	}
 
