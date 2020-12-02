@@ -5,7 +5,10 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"os/signal"
 	"path/filepath"
+	"syscall"
+	"time"
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
@@ -36,7 +39,6 @@ func intToIP(val uint32) net.IP {
 
 func ipToInt(val string) uint32 {
 	ip := net.ParseIP(val).To4()
-	fmt.Println(ip[0], ip[1], ip, binary.LittleEndian.Uint32(ip))
 	return binary.LittleEndian.Uint32(ip)
 }
 
@@ -128,26 +130,39 @@ func main() {
 		}
 
 		if action == "show" {
-			var val record
-			for outputMap.LookupAndDelete(nil, &val) == nil {
-				if val.Dstip == 0 {
-					continue
-				}
-				dstip := intToIP(val.Dstip)
-				srcip := intToIP(val.Srcip)
-				egress := (val.Flags & 1) != 0
-				blocked := (val.Flags & 2) != 0
 
-				var pktFlow string
-				if egress {
-					pktFlow = fmt.Sprintf("%v -> %v", srcip, dstip)
-				} else {
-					pktFlow = fmt.Sprintf("%v <- %v", dstip, srcip)
+			sigc := make(chan os.Signal, 1)
+			signal.Notify(sigc, syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT)
+			ticker := time.NewTicker(100 * time.Millisecond)
+
+		outer_loop:
+			for {
+				select {
+				case <-ticker.C:
+					var val record
+					for outputMap.LookupAndDelete(nil, &val) == nil {
+						if val.Dstip == 0 {
+							continue
+						}
+						dstip := intToIP(val.Dstip)
+						srcip := intToIP(val.Srcip)
+						egress := (val.Flags & 1) != 0
+						blocked := (val.Flags & 2) != 0
+
+						var pktFlow string
+						if egress {
+							pktFlow = fmt.Sprintf("%v -> %v", srcip, dstip)
+						} else {
+							pktFlow = fmt.Sprintf("%v <- %v", dstip, srcip)
+						}
+						if blocked {
+							pktFlow += " [BLOCKED]"
+						}
+						fmt.Println(pktFlow)
+					}
+				case <-sigc:
+					break outer_loop
 				}
-				if blocked {
-					pktFlow += " [BLOCKED]"
-				}
-				fmt.Println(pktFlow)
 			}
 		} else if action == "unload" {
 			cgroup, err := os.Open(rootCgroup)
