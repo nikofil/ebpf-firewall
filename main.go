@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/binary"
 	"fmt"
 	"net"
 	"os"
@@ -20,15 +21,23 @@ type record struct {
 const (
 	rootCgroup      = "/sys/fs/cgroup/unified"
 	ebpfFS          = "/sys/fs/bpf"
-	flowMapName     = "flows"
-	blockedMapName  = "blocked"
+	flowMapName     = "flows_map"
+	blockedMapName  = "blocked_map"
 	bpfCodePath     = "bpf.o"
 	egressProgName  = "egress"
 	ingressProgName = "ingress"
 )
 
 func intToIP(val uint32) net.IP {
-	return net.IPv4(byte(val&0xff), byte((val>>8)&0xff), byte((val>>16)&0xff), byte(val>>24))
+	var bytes [4]byte
+	binary.LittleEndian.PutUint32(bytes[:], val)
+	return net.IPv4(bytes[0], bytes[1], bytes[2], bytes[3])
+}
+
+func ipToInt(val string) uint32 {
+	ip := net.ParseIP(val).To4()
+	fmt.Println(ip[0], ip[1], ip, binary.LittleEndian.Uint32(ip))
+	return binary.LittleEndian.Uint32(ip)
 }
 
 func main() {
@@ -58,10 +67,12 @@ func main() {
 	}
 	defer cgroup.Close()
 
-	var outputMap *ebpf.Map
-	mapPinPath := filepath.Join(ebpfFS, flowMapName)
+	var outputMap, blockedMap *ebpf.Map
+	flowPinPath := filepath.Join(ebpfFS, flowMapName)
+	blockedPinPath := filepath.Join(ebpfFS, blockedMapName)
 
-	if os.Args[1] == "load" {
+	action := os.Args[1]
+	if action == "load" {
 		ingressProg = collec.Programs[ingressProgName]
 		ingressProg.Pin(ingressPinPath)
 
@@ -89,27 +100,34 @@ func main() {
 		}
 
 		outputMap, _ = collec.Maps[flowMapName]
-		outputMap.Pin(mapPinPath)
+		outputMap.Pin(flowPinPath)
+
+		blockedMap, _ = collec.Maps[blockedMapName]
+		blockedMap.Pin(blockedPinPath)
 	} else {
 		ingressProg, err = ebpf.LoadPinnedProgram(ingressPinPath)
 		if err != nil {
 			fmt.Println(err)
 			return
 		}
-
 		egressProg, err = ebpf.LoadPinnedProgram(egressPinPath)
 		if err != nil {
 			fmt.Println(err)
 			return
 		}
 
-		outputMap, err = ebpf.LoadPinnedMap(mapPinPath)
+		outputMap, err = ebpf.LoadPinnedMap(flowPinPath)
+		if err != nil {
+			fmt.Println(err)
+			return
+		}
+		blockedMap, err = ebpf.LoadPinnedMap(blockedPinPath)
 		if err != nil {
 			fmt.Println(err)
 			return
 		}
 
-		if os.Args[1] == "show" {
+		if action == "show" {
 			var val record
 			for outputMap.LookupAndDelete(nil, &val) == nil {
 				if val.Dstip == 0 {
@@ -131,7 +149,7 @@ func main() {
 				}
 				fmt.Println(pktFlow)
 			}
-		} else if os.Args[1] == "unload" {
+		} else if action == "unload" {
 			cgroup, err := os.Open(rootCgroup)
 			if err != nil {
 				fmt.Println(err)
@@ -144,7 +162,20 @@ func main() {
 
 			os.Remove(ingressPinPath)
 			os.Remove(egressPinPath)
-			os.Remove(mapPinPath)
+			os.Remove(flowPinPath)
+			os.Remove(blockedPinPath)
+		} else if action == "block" && len(os.Args) == 3 {
+			ip := ipToInt(os.Args[2])
+			if err = blockedMap.Put(&ip, &ip); err != nil {
+				fmt.Println(err)
+			}
+		} else if action == "unblock" && len(os.Args) == 3 {
+			ip := ipToInt(os.Args[2])
+			if err = blockedMap.Delete(&ip); err != nil {
+				fmt.Println(err)
+			}
+		} else {
+			fmt.Println("Unknown action given or wrong number of params:", action)
 		}
 	}
 }
