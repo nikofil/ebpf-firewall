@@ -2,6 +2,10 @@
 
 A very simple firewall, harnessing the power of eBPFs! The eBPF is attached to the root cgroup and is used to control whether packets are allowed through.
 
+Requires Linux >= 4.10 (ie. CentOS 8 or Ubuntu 17.04).
+
+Great eBPF reference: <https://docs.cilium.io/en/v1.9/bpf/>
+
 
 ## Requirements
 
